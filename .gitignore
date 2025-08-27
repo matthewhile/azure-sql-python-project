@@ -17,3 +17,6 @@ venv/
 # Ignore IDE/editor settings
 .vscode/
 .idea/
+
+imdb_tsv_files/
+
