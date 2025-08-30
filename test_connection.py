@@ -1,23 +1,25 @@
 import pyodbc, os
+import sqlalchemy as sa
 from dotenv import load_dotenv
 
 load_dotenv()
 
-# connection_string = (
-#     "Driver={ODBC Driver 18 for SQL Server};"
-#     "Server=tcp:crablab.database.windows.net,1433;"
-#     "Database=imdb_to_azureTest;"
-#     "Uid=mattadmin;"
-#     "Pwd=*uwtQvBJ{AGT8B[[I&Uh;"
-#     "Encrypt=yes;"
-#     "TrustServerCertificate=no;"
-#     "Connection Timeout=30;"
-# )
+# Pyodbc connection test:
+# connection_string = os.getenv("AZURE_CONN_STRING")
+
+# conn = pyodbc.connect(connection_string)
+# print("Connected to Azure SQL Database!")
+# conn.close()
+
+
+# SQLAlchemy connection test:
 
 connection_string = os.getenv("AZURE_CONN_STRING")
 
+# Create SQLAlchemy engine
+engine = sa.create_engine(connection_string)
 
-conn = pyodbc.connect(connection_string)
-print("Connected to Azure SQL Database!")
-conn.close()
+with engine.connect() as connection:
+    print("Connected to Azure SQL Database!")
 
+connection.close()
