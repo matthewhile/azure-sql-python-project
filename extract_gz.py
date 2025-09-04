@@ -1,8 +1,8 @@
-
+import pyodbc
 import gzip, shutil
 from pathlib import Path
 
-directory = r"C:\Users\MatthewHile\Desktop\Labs\imdb_to_azure\gz_files"
+directory = r"C:\Users\MatthewHile\Desktop\Labs\imdb_to_azure\imdb_gz_files"
 
 def extract_all_in_directory(directory):
 
