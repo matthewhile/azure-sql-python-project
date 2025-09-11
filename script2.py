@@ -1,6 +1,5 @@
 import os
-import pandas as pd 
-import pyodbc
+import csv
 import sqlalchemy as sa
 from sqlalchemy import types
 from dotenv import load_dotenv
@@ -36,16 +35,23 @@ with engine.begin() as connection:
 
             blob_client = container_client.get_blob_client(file) # create the blob object
             
+            print(f"\nUploading {file} to Azure Blob Storage")
             with open(file_path, "rb") as data:
                 blob_client.upload_blob(data, overwrite=True) # upload .tsv file and overwrite
-            print(f"\nUploaded {file} to Azure Blob Storage")
+            print(f"Uploaded {file} to Azure Blob Storage")
 
             # Get staging table name
             base_name = os.path.splitext(file)[0].replace(".", "_")
             stg_table_name = f"stg_{base_name}"
 
-            blob_url = f"https://stimdbeastusdev002.blob.core.windows.net/{container_name}/{file}"
+             # --- Read first row (header) from TSV ---
+            with open(file_path, newline="", encoding="utf-8") as tsvfile:
+                reader = csv.reader(tsvfile, delimiter="\t")
+                headers = next(reader)
+            
+            col_defs = ",\n ".join([f"[{col}] NVARCHAR(300)" for col in headers])
 
+            # Delete staging table if already exists
             connection.execute(sa.text(f"""
             IF OBJECT_ID('dbo.{stg_table_name}', 'U') IS NOT NULL
                 DROP TABLE dbo.{stg_table_name};
@@ -54,10 +60,23 @@ with engine.begin() as connection:
             # Create staging table for each file
             connection.execute(sa.text(f"""
             CREATE TABLE dbo.{stg_table_name} (
-                line NVARCHAR(MAX)
+                {col_defs}
             );
             """))
-            print(f"Created table {stg_table_name}")
+            print(f"\nCreated table {stg_table_name}")
+
+            print(f"\nStarted bulk insert from {file} into {stg_table_name} at {datetime.now()}")
+            connection.execute(sa.text(f"""
+            BULK INSERT dbo.{stg_table_name}
+            FROM '{file}'
+            WITH (
+                DATA_SOURCE = 'AzureBlobStorage',
+                FIELDTERMINATOR = '\t',
+                ROWTERMINATOR = '0x0a',
+                FIRSTROW = 2
+            );
+            """))
+            print(f"Finished bulk insert from {file} into {stg_table_name} at {datetime.now()}")
 
 connection.close()
 
