@@ -49,7 +49,7 @@ with engine.begin() as connection:
                 reader = csv.reader(tsvfile, delimiter="\t")
                 headers = next(reader)
             
-            col_defs = ",\n ".join([f"[{col}] NVARCHAR(300)" for col in headers])
+            col_defs = ",\n ".join([f"[{col}] NVARCHAR(MAX)" for col in headers])
 
             # Delete staging table if already exists
             connection.execute(sa.text(f"""
