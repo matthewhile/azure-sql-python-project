@@ -3,6 +3,7 @@ DECLARE @stgTableName SYSNAME;
 DECLARE @colName SYSNAME;
 DECLARE @sql NVARCHAR(MAX); 
 DECLARE @finalTable SYSNAME;
+DECLARE @DataType NVARCHAR(100);
 
 DECLARE table_cursor CURSOR FAST_FORWARD FOR
 -- get the names of all tables in the dbo schema whose names start with stg_.
@@ -10,7 +11,8 @@ DECLARE table_cursor CURSOR FAST_FORWARD FOR
 SELECT t.name 
 FROM sys.tables t 
 JOIN sys.schemas s ON t.schema_id = s.schema_id
-WHERE s.name = 'dbo' AND t.name LIKE 'stg_%';
+--- WHERE s.name = 'dbo' AND t.name LIKE 'stg_%';
+WHERE s.name = 'dbo' AND t.name = 'stg_title_ratings'
 
 OPEN table_cursor;
 FETCH NEXT FROM table_curosr INTO @stgTableName;
@@ -39,7 +41,7 @@ BEGIN
     WHILE @@FETCH_STATUS = 0
     BEGIN   
         PRINT '--- Profiling column: ' + @colName;
-
+        -- For each column, check if the data type is INT, BIT, DECIMAL, DATE or NVARCHAR
         SET @sql = N'
             SELECT 
                 SUM(CASE WHEN TRY_CAST([' + @colName + N'] AS INT) IS NULL 
@@ -63,16 +65,51 @@ BEGIN
                 FROM dbo.' + QUOTENAME(@stgTableName) + N'
             ) t;';
 
+        CREATE TABLE #Profile (
+            NotInt INT,
+            NotBit INT,
+            NotDecimal INT,
+            NotDate INT,
+            MaxLen INT
+        );
+
+        INSERT INTO #Profile
         EXEC sp_executesql @sql;
+
+        -- Infer the data type
+        SELECT TOP 1
+            @DataType = CASE
+                WHEN NotInt = 0 THEN 'INT'
+                WHEN NotBit = 0 THEN 'BIT'
+                WHEN NotDecimal = 0 THEN 'DECIMAL(38,10)'
+                WHEN NotDate = 0 THEN 'DATE'
+                ELSE 'NVARCHAR(' + CAST(ISNULL(NULLIF(MaxLen,0),50) AS VARCHAR(10)) + ')'
+            END
+        FROM #Profile;
+
+        DROP TABLE #Profile;
+
+        PRINT 'Inferred type for ' + @colName + ' = ' + @DataType;
+
+        -- Save the column definition
+        INSERT INTO #Cols (ColDef)
+        VALUES (QUOTENAME(@colName) + ' ' + @DataType);
+
+        FETCH NEXT FROM column_cursor INTO @colName;
+    END;
+
+    CLOSE column_cursor;
+    DEALLOCATE column_cursor;
 
 -- Create final table
     SET @sql = N'CREATE TABLE dbo.' + QUOTENAME(@finalTable) + ' (';
 
-    SELECT @sql = @sql + QUOTENAME(c.name) + ' NVARCHAR(MAX),'
-    FROM sys.columns c
-    WHERE c.object_id = OBJECT_ID(@tableName);
+    SELECT @sql = @sql + STRING_AGG(ColDef, ', ')
+    FROM #Cols;
 
-    SET @sql = LEFT(@sql, LEN(@sql) - 1) + ');'; -- trim trailing comma
+    SET @sql = @sql + ');';
+
+    PRINT '--- Creating final table: ' + @finalTable;
     EXEC sp_executesql @sql;
 
 -- Insert into final table with NULLIF on every column
@@ -91,5 +128,7 @@ BEGIN
     EXEC sp_executesql @sql;
 
     FETCH NEXT FROM table_cursor INTO @stgTableName;
+END;
 
-END
+CLOSE table_cursor;
+DEALLOCATE table_cursor;
