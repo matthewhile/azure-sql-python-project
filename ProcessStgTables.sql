@@ -5,17 +5,19 @@ DECLARE @sql NVARCHAR(MAX);
 DECLARE @finalTable SYSNAME;
 DECLARE @DataType NVARCHAR(100);
 
+DECLARE @selectList NVARCHAR(MAX);
+
 DECLARE table_cursor CURSOR FAST_FORWARD FOR
 -- get the names of all tables in the dbo schema whose names start with stg_.
 -- sys.tables & sys.schemas are built in catalog views
 SELECT t.name 
 FROM sys.tables t 
 JOIN sys.schemas s ON t.schema_id = s.schema_id
---- WHERE s.name = 'dbo' AND t.name LIKE 'stg_%';
-WHERE s.name = 'dbo' AND t.name = 'stg_title_ratings'
+WHERE s.name = 'dbo' AND t.name LIKE 'stg_%';
+-- WHERE s.name = 'dbo' AND t.name = 'stg_title_ratings'
 
 OPEN table_cursor;
-FETCH NEXT FROM table_curosr INTO @stgTableName;
+FETCH NEXT FROM table_cursor INTO @stgTableName;
 
 WHILE @@FETCH_STATUS = 0
 BEGIN 
@@ -26,6 +28,10 @@ BEGIN
     -- Drop final table if it exists
     SET @sql = N'DROP TABLE IF EXISTS dbo.' + QUOTENAME(@finalTable) + ';';
     EXEC sp_executesql @sql;
+
+    -- Temporary storage for column definitions
+    IF OBJECT_ID('tempdb..#Cols') IS NOT NULL DROP TABLE #Cols;
+    CREATE TABLE #Cols (ColDef NVARCHAR(MAX));
 
     -- Infer correct data types
     DECLARE column_cursor CURSOR FAST_FORWARD FOR
@@ -41,28 +47,29 @@ BEGIN
     WHILE @@FETCH_STATUS = 0
     BEGIN   
         PRINT '--- Profiling column: ' + @colName;
-        -- For each column, check if the data type is INT, BIT, DECIMAL, DATE or NVARCHAR
+        -- For the first 10,000 rows of each column, check if the data type is INT, BIT, DECIMAL, DATE or NVARCHAR
         SET @sql = N'
             SELECT 
                 SUM(CASE WHEN TRY_CAST([' + @colName + N'] AS INT) IS NULL 
                           AND [' + @colName + N'] IS NOT NULL 
-                          AND [' + @colName + N'] NOT IN ('/N','') 
+                          AND [' + @colName + N'] NOT IN (''\N'','''') 
                           THEN 1 ELSE 0 END) AS NotInt,
                 SUM(CASE WHEN TRY_CAST([' + @colName + N'] AS BIT) IS NULL 
                           AND [' + @colName + N'] IS NOT NULL 
-                          AND [' + @colName + N'] NOT IN ('/N','') 
+                          AND [' + @colName + N'] NOT IN (''\N'','''') 
                           THEN 1 ELSE 0 END) AS NotBit,
                 SUM(CASE WHEN TRY_CAST([' + @colName + N'] AS DECIMAL(38,10)) IS NULL 
                           AND [' + @colName + N'] IS NOT NULL 
-                          AND [' + @colName + N'] NOT IN ('/N','') 
+                          AND [' + @colName + N'] NOT IN (''\N'','''') 
                           THEN 1 ELSE 0 END) AS NotDecimal,
                 SUM(CASE WHEN TRY_CAST([' + @colName + N'] AS DATE) IS NULL 
                           AND [' + @colName + N'] IS NOT NULL 
-                          AND [' + @colName + N'] NOT IN ('/N','') 
-                          THEN 1 ELSE 0 END) AS NotDate
+                          AND [' + @colName + N'] NOT IN (''\N'','''') 
+                          THEN 1 ELSE 0 END) AS NotDate,
+                MAX(LEN([' + @colName + N'])) AS MaxLen
             FROM (
-                SELECT TOP (1000) [' + @colName + N']
-                FROM dbo.' + QUOTENAME(@stgTableName) + N'
+                SELECT TOP (10000) [' + @colName + N'] 
+                FROM dbo.' + QUOTENAME(@stgTableName) + N' 
             ) t;';
 
         CREATE TABLE #Profile (
@@ -83,7 +90,7 @@ BEGIN
                 WHEN NotBit = 0 THEN 'BIT'
                 WHEN NotDecimal = 0 THEN 'DECIMAL(38,10)'
                 WHEN NotDate = 0 THEN 'DATE'
-                ELSE 'NVARCHAR(' + CAST(ISNULL(NULLIF(MaxLen,0),50) AS VARCHAR(10)) + ')'
+                ELSE 'NVARCHAR(MAX)'
             END
         FROM #Profile;
 
@@ -115,17 +122,30 @@ BEGIN
 -- Insert into final table with NULLIF on every column
 -- '\N' values becomes NULL during the insert 
 
-    SET @sql = N'INSERT INTO dbo.' + QUOTENAME(@finalTable) + ' SELECT ';
+-- Build INSERT into final table using inferred types
+    SELECT @selectList = (
+        SELECT STRING_AGG(
+            'CAST(NULLIF('
+                + LEFT(ColDef, CHARINDEX(' ', ColDef) - 1)          -- [ColumnName]
+                + ', ''\N'') AS '
+                + LTRIM(SUBSTRING(ColDef, CHARINDEX(' ', ColDef) + 1, 8000)) -- DataType
+                + ')'
+            , ', ')
+        FROM #Cols
+        WHERE CHARINDEX(' ', ColDef) > 0
+    );
 
-    SELECT @sql = @sql +
-        'NULLIF(' + QUOTENAME(c.name) + ', ''\N''),'
-    FROM sys.columns c 
-    WHERE c.object_id = OBJECT_ID(@stgTableName);
+    IF @selectList IS NULL
+        SET @selectList = ''; 
 
-     SET @sql = LEFT(@sql, LEN(@sql) - 1) -- remove trailing comma
-         + ' FROM dbo.' + QUOTENAME(@stgTableName) + ';';
+    SET @sql = N'INSERT INTO dbo.' + QUOTENAME(@finalTable) + ' SELECT ' 
+            + @selectList
+            + ' FROM dbo.' + QUOTENAME(@stgTableName) + ';';
 
+    -- PRINT '--- Insert SQL:';
+    -- PRINT @sql; 
     EXEC sp_executesql @sql;
+
 
     FETCH NEXT FROM table_cursor INTO @stgTableName;
 END;
