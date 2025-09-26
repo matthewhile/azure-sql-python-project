@@ -116,8 +116,8 @@ BEGIN
 
     SET @sql = @sql + ');';
 
-    PRINT '--- Creating final table: ' + @finalTable;
     EXEC sp_executesql @sql;
+    PRINT '--- Created final table: ' + @finalTable;
 
 -- Insert into final table with NULLIF on every column
 -- '\N' values becomes NULL during the insert 
@@ -145,7 +145,7 @@ BEGIN
     -- PRINT '--- Insert SQL:';
     -- PRINT @sql; 
     EXEC sp_executesql @sql;
-
+    PRINT '--- Successfully inserted into final table: ' + @finalTable;
 
     FETCH NEXT FROM table_cursor INTO @stgTableName;
 END;

@@ -1,11 +1,11 @@
 import os
 import csv
 import sqlalchemy as sa
-from sqlalchemy import types
 from dotenv import load_dotenv
 from azure.storage.blob import BlobServiceClient
 from datetime import datetime
 
+# Pass in connection strings
 load_dotenv()
 
 print(f"Script started at {datetime.now()}")
@@ -16,7 +16,6 @@ directory = r"C:\Users\MatthewHile\Desktop\Labs\imdb_to_azure\imdb_tsv_files"
 # Pass in the connection strings from .env
 sql_conn_sting = os.getenv("AZURE_CONN_STRING")
 storage_conn_string = os.getenv("AZURE_STORAGE_CONN_STRING")
-
 container_name = "stagetsv"
 
 # Create the BlobServiceClient
@@ -27,13 +26,14 @@ container_client = blob_service_client.get_container_client(container_name)
 engine = sa.create_engine(sql_conn_sting)
 
 with engine.begin() as connection:
+
     print("Connected to Azure SQL Database")
 
     for file in os.listdir(directory):
         if file.endswith(".tsv"):
             file_path = os.path.join(directory, file) # read tsv
 
-            blob_client = container_client.get_blob_client(file) # create the blob object
+            blob_client = container_client.get_blob_client(file) # creates the blob object
             
             print(f"\nUploading {file} to Azure Blob Storage")
             with open(file_path, "rb") as data:
@@ -44,7 +44,7 @@ with engine.begin() as connection:
             base_name = os.path.splitext(file)[0].replace(".", "_")
             stg_table_name = f"stg_{base_name}"
 
-             # --- Read first row (header) from TSV ---
+             # Read first row (header) from TSV 
             with open(file_path, newline="", encoding="utf-8") as tsvfile:
                 reader = csv.reader(tsvfile, delimiter="\t")
                 headers = next(reader)
@@ -63,7 +63,7 @@ with engine.begin() as connection:
                 {col_defs}
             );
             """))
-            print(f"\nCreated table {stg_table_name}")
+            print(f"\nCreated staging table {stg_table_name}")
 
             print(f"\nStarted bulk insert from {file} into {stg_table_name} at {datetime.now()}")
             connection.execute(sa.text(f"""
@@ -77,8 +77,16 @@ with engine.begin() as connection:
             );
             """))
             print(f"Finished bulk insert from {file} into {stg_table_name} at {datetime.now()}")
+    
+    # Call the SQL script to infer data types + create & insert into final tables
+    print(f"\nCalling ProcessStgTables.sql script...")
+    with open("ProcessStgTables.sql", "r") as f:
+        sql_script = f.read()
+
+    connection.exec_driver_sql(sql_script)
+    print(f"\nExecuted ProcessStgTables.sql script")
 
 connection.close()
 
-print("\nAll files processed successfully.")
+print("\nAll files processed successfully!")
 print(f"Script completed at {datetime.now()}")
