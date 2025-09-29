@@ -1,20 +1,26 @@
--- First step, loop through each staging table?
+/*
+This script loops through each staging table in dbo that begins with 'stg_'.
+For each column, it attempts to infer the most appropriate SQL data type by running
+TRY_CAST checks (INT, BIT, DECIMAL, DATE). If no type matches, it falls back to NVARCHAR(MAX).  
+
+It then creates a corresponding final_* table with the inferred column types,
+and inserts data from the staging table into the final table. During the insert,
+any '/N' placeholder values are converted to NULL.
+*/
+
 DECLARE @stgTableName SYSNAME;
 DECLARE @colName SYSNAME;
 DECLARE @sql NVARCHAR(MAX); 
 DECLARE @finalTable SYSNAME;
-DECLARE @DataType NVARCHAR(100);
-
+DECLARE @dataType NVARCHAR(100);
 DECLARE @selectList NVARCHAR(MAX);
 
 DECLARE table_cursor CURSOR FAST_FORWARD FOR
--- get the names of all tables in the dbo schema whose names start with stg_.
--- sys.tables & sys.schemas are built in catalog views
+-- Get the names of all tables in the dbo schema that start with stg_.
 SELECT t.name 
 FROM sys.tables t 
 JOIN sys.schemas s ON t.schema_id = s.schema_id
 WHERE s.name = 'dbo' AND t.name LIKE 'stg_%';
--- WHERE s.name = 'dbo' AND t.name = 'stg_title_ratings'
 
 OPEN table_cursor;
 FETCH NEXT FROM table_cursor INTO @stgTableName;
@@ -31,7 +37,11 @@ BEGIN
 
     -- Temporary storage for column definitions
     IF OBJECT_ID('tempdb..#Cols') IS NOT NULL DROP TABLE #Cols;
-    CREATE TABLE #Cols (ColDef NVARCHAR(MAX));
+    
+    CREATE TABLE #Cols (
+        ColName SYSNAME,
+        DataType NVARCHAR(100)
+    );
 
     -- Infer correct data types
     DECLARE column_cursor CURSOR FAST_FORWARD FOR
@@ -72,6 +82,7 @@ BEGIN
                 FROM dbo.' + QUOTENAME(@stgTableName) + N' 
             ) t;';
 
+        -- Profile each column for specified data types
         CREATE TABLE #Profile (
             NotInt INT,
             NotBit INT,
@@ -83,9 +94,9 @@ BEGIN
         INSERT INTO #Profile
         EXEC sp_executesql @sql;
 
-        -- Infer the data type
+        -- Infer the data types 
         SELECT TOP 1
-            @DataType = CASE
+            @dataType = CASE
                 WHEN NotInt = 0 THEN 'INT'
                 WHEN NotBit = 0 THEN 'BIT'
                 WHEN NotDecimal = 0 THEN 'DECIMAL(38,10)'
@@ -96,44 +107,34 @@ BEGIN
 
         DROP TABLE #Profile;
 
-        PRINT 'Inferred type for ' + @colName + ' = ' + @DataType;
+        PRINT 'Inferred type for ' + @colName + ' = ' + @dataType;
 
-        -- Save the column definition
-        INSERT INTO #Cols (ColDef)
-        VALUES (QUOTENAME(@colName) + ' ' + @DataType);
+        -- Save the column name and data type
+        INSERT INTO #Cols (ColName, DataType)
+        VALUES (QUOTENAME(@colName), @dataType);
 
+        -- Fetch the next column in the table if one exists
         FETCH NEXT FROM column_cursor INTO @colName;
     END;
 
     CLOSE column_cursor;
     DEALLOCATE column_cursor;
 
--- Create final table
+    -- Create final table
     SET @sql = N'CREATE TABLE dbo.' + QUOTENAME(@finalTable) + ' (';
-
-    SELECT @sql = @sql + STRING_AGG(ColDef, ', ')
+    SELECT @sql = @sql + STRING_AGG(ColName + ' ' + DataType, ', ')
     FROM #Cols;
-
     SET @sql = @sql + ');';
 
     EXEC sp_executesql @sql;
     PRINT '--- Created final table: ' + @finalTable;
 
--- Insert into final table with NULLIF on every column
--- '\N' values becomes NULL during the insert 
-
--- Build INSERT into final table using inferred types
-    SELECT @selectList = (
-        SELECT STRING_AGG(
-            'CAST(NULLIF('
-                + LEFT(ColDef, CHARINDEX(' ', ColDef) - 1)          -- [ColumnName]
-                + ', ''\N'') AS '
-                + LTRIM(SUBSTRING(ColDef, CHARINDEX(' ', ColDef) + 1, 8000)) -- DataType
-                + ')'
-            , ', ')
-        FROM #Cols
-        WHERE CHARINDEX(' ', ColDef) > 0
-    );
+    -- Build INSERT into final table using inferred types
+    -- '\N' values become NULL during the insert
+    SELECT @selectList = STRING_AGG(
+        'CAST(NULLIF(' + ColName + ', ''\N'') AS ' + DataType + ')', ', '
+    )
+    FROM #Cols;
 
     IF @selectList IS NULL
         SET @selectList = ''; 
@@ -142,11 +143,10 @@ BEGIN
             + @selectList
             + ' FROM dbo.' + QUOTENAME(@stgTableName) + ';';
 
-    -- PRINT '--- Insert SQL:';
-    -- PRINT @sql; 
     EXEC sp_executesql @sql;
     PRINT '--- Successfully inserted into final table: ' + @finalTable;
 
+    -- Fetch the next staging table name if one exists
     FETCH NEXT FROM table_cursor INTO @stgTableName;
 END;
 
